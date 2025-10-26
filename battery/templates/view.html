@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>设备电量历史查询</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body {
+      font-family: "Microsoft YaHei", Arial, sans-serif;
+      margin: 0;
+      background-color: #f5f6fa;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+    header {
+      background-color: #4285f4;
+      color: white;
+      padding: 14px;
+      text-align: center;
+      font-size: 18px;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      overflow-y: auto;
+    }
+    .query-box {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    input, button, label {
+      font-size: 16px;
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      outline: none;
+    }
+    button {
+      background-color: #4285f4;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    button:hover {
+      background-color: #3367d6;
+    }
+    #status {
+      text-align: center;
+      font-size: 15px;
+      margin-bottom: 8px;
+      color: #444;
+    }
+    #latest {
+      text-align: center;
+      font-size: 16px;
+      color: #2e7d32;
+      margin-bottom: 8px;
+      font-weight: bold;
+    }
+    #chartContainer {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+    .toggle-box {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .toggle-box input {
+      transform: scale(1.2);
+    }
+  </style>
+</head>
+<body>
+  <header>📊 电量历史查询</header>
+  <main>
+    <div class="query-box">
+      <input id="deviceInput" type="text" placeholder="设备名 (8位字母数字)" maxlength="8" />
+      <input id="dateInput" type="date" />
+      <button id="btnQuery">查询</button>
+    </div>
+    <div class="toggle-box">
+      <input type="checkbox" id="fixedScale" />
+      <label for="fixedScale">固定满刻度（0~100）</label>
+    </div>
+    <div id="status">状态：等待查询</div>
+    <div id="latest">最新数据：--</div>
+    <div id="chartContainer">
+      <canvas id="batteryChart"></canvas>
+    </div>
+  </main>
+
+  <script>
+    const btnQuery = document.getElementById('btnQuery');
+    const deviceInput = document.getElementById('deviceInput');
+    const dateInput = document.getElementById('dateInput');
+    const fixedScale = document.getElementById('fixedScale');
+    const statusDiv = document.getElementById('status');
+    const latestDiv = document.getElementById('latest');
+    const ctx = document.getElementById('batteryChart').getContext('2d');
+
+    // 默认日期为今天
+    const today = new Date().toISOString().slice(0, 10);
+    dateInput.value = today;
+
+    // 初始化图表
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label: '电量 (%)',
+          data: [],
+          borderColor: '#4285f4',
+          tension: 0.25,
+          fill: false,
+          pointRadius: 3,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+        },
+        scales: {
+          y: {
+            min: 0,
+            max: 100,
+            title: { display: true, text: '电量 (%)' },
+            ticks: { stepSize: 20 }
+          },
+          x: {
+            title: { display: true, text: '时间' },
+            ticks: { maxTicksLimit: 8 }
+          }
+        }
+      }
+    });
+
+    function validTableName(name) {
+      return /^[a-z\d]{8}$/.test(name) && /[a-z]/.test(name) && /\d/.test(name);
+    }
+
+    async function fetchHistory(table, date) {
+      try {
+        const resp = await fetch(`/api/data?table=${encodeURIComponent(table)}&date=${encodeURIComponent(date)}`);
+        const json = await resp.json();
+        if (!resp.ok || json.error) {
+          statusDiv.textContent = `错误: ${json.error || resp.statusText}`;
+          latestDiv.textContent = "最新数据：--";
+          return;
+        }
+
+        const data = json.data || [];
+        if (data.length === 0) {
+          statusDiv.textContent = "没有数据";
+          latestDiv.textContent = "最新数据：--";
+          chart.data.labels = [];
+          chart.data.datasets[0].data = [];
+          chart.update();
+          return;
+        }
+
+        // ✅ 根据用户开关动态调整Y轴范围
+        if (fixedScale.checked) {
+          chart.options.scales.y.min = 0;
+          chart.options.scales.y.max = 100;
+        } else {
+          chart.options.scales.y.min = json.min_battery ?? 0;
+          chart.options.scales.y.max = json.max_battery ?? 100;
+        }
+
+        chart.data.labels = data.map(d => d.time);
+        chart.data.datasets[0].data = data.map(d => d.battery);
+        chart.update();
+
+        const latest = data[data.length - 1];
+        latestDiv.textContent = `最新数据：${latest.time} → ${latest.battery}%`;
+        statusDiv.textContent = `共 ${data.length} 条记录 (范围 ${json.min_battery}~${json.max_battery}%)`;
+      } catch (e) {
+        statusDiv.textContent = `请求失败: ${e.message}`;
+        latestDiv.textContent = "最新数据：--";
+      }
+    }
+
+    btnQuery.addEventListener('click', () => {
+      const table = deviceInput.value.trim();
+      const date = dateInput.value;
+      if (!validTableName(table)) {
+        alert('设备名必须为8位，小写字母和数字组成，且至少包含一个字母和数字。');
+        return;
+      }
+      if (!date) {
+        alert('请选择日期');
+        return;
+      }
+      statusDiv.textContent = `正在查询 ${table} (${date})...`;
+      latestDiv.textContent = "最新数据：--";
+      fetchHistory(table, date);
+    });
+  </script>
+</body>
+</html>
